@@ -1,6 +1,7 @@
 #include "exchange.hpp"
 #include <sstream>
 #include <set>
+#include <cassert> 
 // MakeDeposit
 void Exchange::MakeDeposit(const std::string &username, const std::string &asset, int amount){
     if(users.find(username) == users.end()){
@@ -35,193 +36,126 @@ bool Exchange::MakeWithdrawal(const std::string &username, const std::string &as
 }
 
 bool Exchange::AddOrder(Order order) {
-    auto& user = users[order.username];
+    UserAccount& user = users[order.username];
 
-    // Handle buy orders
     if (order.side == "Buy") {
         int totalUSD = order.price * order.amount;
 
-        // Check if user has enough USD to place the buy order
         if (!user.hasSufficientBalance("USD", totalUSD)) {
             return false;  // Not enough USD
         }
-
-        // Immediately reduce USD from the user's portfolio for the committed amount
         user.portfolio["USD"] -= totalUSD;
 
-        // Add the buy order to the user's open orders
-        user.openOrders.push_back(order);
-
-        // Add the buy order to the buy order book
-        orderBookBuy[order.asset].push_back(order);
-        std::sort(orderBookBuy[order.asset].begin(), orderBookBuy[order.asset].end(), [](const Order& a, const Order& b) {
-            return a.price > b.price;
-        });
-
-        // Try to match with available sell orders
+        // will add to open orders after matching
         MatchOrders(order);
     }
-    // Handle sell orders
+
     else if (order.side == "Sell") {
         if (!user.hasSufficientBalance(order.asset, order.amount)) {
             return false;  // Not enough assets
         }
-
-        // Immediately reduce the asset from the user's portfolio for the committed amount
         user.portfolio[order.asset] -= order.amount;
 
-        // Add the sell order to the user's open orders
-        user.openOrders.push_back(order);
-
-        // Add the sell order to the sell order book
-        orderBookSell[order.asset].push_back(order);
-        std::sort(orderBookSell[order.asset].begin(), orderBookSell[order.asset].end(), [](const Order& a, const Order& b) {
-            return a.price < b.price;
-        });
-
-        // Try to match with available buy orders
+        // will add to open orders after matching
         MatchOrders(order);
     }
 
-    return true;  // Order was successfully added
+    return true;  
 }
 
-void Exchange::MatchOrders(Order order) {
-    if (order.side == "Buy") {
-        auto& sellOrders = orderBookSell[order.asset];
-        for (auto& sellOrder : sellOrders) {
-            if (order.price >= sellOrder.price && order.amount > 0) {
-                // Match the orders
-                int matchedAmount = std::min(order.amount, sellOrder.amount);
-                int totalPrice = matchedAmount * order.price;
+void Exchange::ProcessOrders(std::string side, Order taker, std::deque<Order>& takerBook, 
+                            std::deque<Order>& makerBook) {
+    UserAccount& takerUser = users[taker.username];
 
-                // Update user portfolios
-                auto& buyUser = users[order.username];
-                auto& sellUser = users[sellOrder.username];
+    while (makerBook.size()) {
+        if (taker.amount == 0) break;
 
-                sellUser.portfolio["USD"] += totalPrice;
-                buyUser.portfolio[order.asset] += matchedAmount;
+        Order maker = makerBook.front();
 
-                // Reduce the order amounts temporarily for matching
-                int remainingBuyAmount = order.amount - matchedAmount;
-                int remainingSellAmount = sellOrder.amount - matchedAmount;
+        if (side == "Sell" && taker.price > maker.price) break;
+        if (side == "Buy" && taker.price < maker.price) break;
 
-                // If the sell order is filled, move it to filled orders
-                if (remainingSellAmount == 0) {
-                    sellUser.filledOrders.push_back(Order(sellOrder.username, sellOrder.side, 
-                        sellOrder.asset, matchedAmount, order.price));
-                    // Remove from sell order book and user's open orders
-                    sellOrders.erase(std::find(sellOrders.begin(), sellOrders.end(), sellOrder));
-                    sellUser.openOrders.erase(std::find(sellUser.openOrders.begin(), sellUser.openOrders.end(), sellOrder));
-                }
+        int amount = std::min(taker.amount, maker.amount);
+        int totalPrice = amount * taker.price;
+        UserAccount& makerUser = users[maker.username];
 
-                // If the buy order is filled, move it to filled orders
-                if (remainingBuyAmount == 0) {
-                    buyUser.filledOrders.push_back(order);
-                    // Remove from buy order book and user's open orders
-                    orderBookBuy[order.asset].erase(std::find(orderBookBuy[order.asset].begin(), orderBookBuy[order.asset].end(), order));
-                    buyUser.openOrders.erase(std::find(buyUser.openOrders.begin(), buyUser.openOrders.end(), order));
-                    break;  // No need to match further if the buy order is fully filled
-                }
-                int boughtAmount = order.amount - remainingBuyAmount;
-                // If the buy order is partially filled, update the amount left
-                order.amount = remainingBuyAmount;
+        std::string buyer, seller;
 
-                // If the sell order is partially filled, update the amount left
-                sellOrder.amount = remainingSellAmount;
-
-                // If the buy order was partially filled, push a new smaller buy order with the remaining amount
-                if (remainingBuyAmount > 0) {
-                    // Remove the old buy order from the open orders and order book
-                    orderBookBuy[order.asset].erase(std::find(orderBookBuy[order.asset].begin(), orderBookBuy[order.asset].end(), order));
-                    buyUser.openOrders.erase(std::find(buyUser.openOrders.begin(), buyUser.openOrders.end(), order));
-                    // Create a new buy order with the remaining amount (2 BTC)
-                    Order remainingBuyOrder = order;
-                    remainingBuyOrder.amount = remainingBuyAmount;
-                    buyUser.openOrders.push_back(remainingBuyOrder);
-                    orderBookBuy[order.asset].push_back(remainingBuyOrder);
-                    
-                    Order boughtOrder = order;
-                    boughtOrder.amount = boughtAmount;
-                    buyUser.filledOrders.push_back(boughtOrder);
-
-                    // Sort buy orders again after pushing the new one
-                    std::sort(orderBookBuy[order.asset].begin(), orderBookBuy[order.asset].end(), [](const Order& a, const Order& b) {
-                        return a.price > b.price;
-                    });
-                }
-            }
+        if (side == "Sell") {
+            takerUser.portfolio["USD"] += totalPrice;
+            makerUser.portfolio[taker.asset] += amount;
+            buyer = maker.username;
+            seller = taker.username;
         }
-    } else if (order.side == "Sell") {
-        auto& buyOrders = orderBookBuy[order.asset];
-        for (auto& buyOrder : buyOrders) {
-            if (order.price <= buyOrder.price && order.amount > 0) {
-                // Match the orders
-                int matchedAmount = std::min(order.amount, buyOrder.amount);
-                int totalPrice = matchedAmount * order.price;
-
-                // Update user portfolios
-                auto& buyUser = users[buyOrder.username];
-                auto& sellUser = users[order.username];
-
-                sellUser.portfolio["USD"] += totalPrice;
-
-                buyUser.portfolio[order.asset] += matchedAmount;
-
-                // Reduce the order amounts temporarily for matching
-                int remainingSellAmount = order.amount - matchedAmount;
-                int remainingBuyAmount = buyOrder.amount - matchedAmount;
-
-                // If the buy order is filled, move it to filled orders
-                if (remainingBuyAmount == 0) {
-                    buyUser.filledOrders.push_back(Order(buyOrder.username, buyOrder.side, 
-                        buyOrder.asset, matchedAmount, order.price));
-                    // Remove from buy order book and user's open orders
-                    buyOrders.erase(std::find(buyOrders.begin(), buyOrders.end(), buyOrder));
-                    buyUser.openOrders.erase(std::find(buyUser.openOrders.begin(), buyUser.openOrders.end(), buyOrder));
-                }
-
-                // If the sell order is filled, move it to filled orders
-                if (remainingSellAmount == 0) {
-                    sellUser.filledOrders.push_back(order);
-                    // Remove from sell order book and user's open orders
-                    orderBookSell[order.asset].erase(std::find(orderBookSell[order.asset].begin(), orderBookSell[order.asset].end(), order));
-                    sellUser.openOrders.erase(std::find(sellUser.openOrders.begin(), sellUser.openOrders.end(), order));
-                    break;  // No need to match further if the sell order is fully filled
-                }
-                int soldAmount = order.amount - remainingSellAmount;
-                // If the sell order is partially filled, update the amount left
-                order.amount = remainingSellAmount;
-
-                // If the buy order is partially filled, update the amount left
-                buyOrder.amount = remainingBuyAmount;
-
-                // If the sell order was partially filled, push a new smaller sell order with the remaining amount
-                if (remainingSellAmount > 0) {
-                    // Remove the old sell order from the open orders and order book
-                    orderBookSell[order.asset].erase(std::find(orderBookSell[order.asset].begin(), orderBookSell[order.asset].end(), order));
-                    sellUser.openOrders.erase(std::find(sellUser.openOrders.begin(), sellUser.openOrders.end(), order));
-
-                    Order remainingSellOrder = order;
-                    remainingSellOrder.amount = remainingSellAmount;
-                    sellUser.openOrders.push_back(remainingSellOrder);
-                    orderBookSell[order.asset].push_back(remainingSellOrder);
-                    Order soldOrder = order;
-                    soldOrder.amount = soldAmount;
-                    sellUser.filledOrders.push_back(soldOrder);
-                    // Sort sell orders again after pushing the new one
-                    std::sort(orderBookSell[order.asset].begin(), orderBookSell[order.asset].end(), [](const Order& a, const Order& b) {
-                        return a.price < b.price;
-                    });
-                }
-            }
+        else if (side == "Buy") {
+            takerUser.portfolio[taker.asset] += amount;
+            makerUser.portfolio["USD"] += totalPrice;
+            buyer = taker.username;
+            seller = maker.username;
         }
+
+        // update trade history
+        Trade trade = {buyer, seller, taker.asset, amount, taker.price};
+        tradeHistory.push_back(trade);
+
+        makerUser.filledOrders.push_back(Order(maker.username, maker.side, taker.asset, amount, taker.price));
+        makerBook.pop_front(); // delete (partially) completed maker order from queue
+
+        // check if taker order is filled 
+        if (taker.amount == amount) {
+            takerUser.filledOrders.push_back(taker);
+            taker.amount -= amount;
+        }
+
+        // if taker.amount still > 0, continue till !makerBook.size()
+        if (taker.amount > amount) {
+            // add partially fulfilled orders to filled orders
+            Order partiallyFulfilledOrder = taker;
+            partiallyFulfilledOrder.amount = amount;
+
+            takerUser.filledOrders.push_back(partiallyFulfilledOrder);
+            taker.amount -= amount;
+        }
+        
+        // if maker order is completed, delete from open orders
+        if (maker.amount == amount)
+            makerUser.openOrders.erase(std::find(makerUser.openOrders.begin(), makerUser.openOrders.end(), maker));
+
+        // if maker.amount > amount: change amount of maker in-place
+        if (maker.amount > amount) {
+            auto pos = std::find(makerUser.openOrders.begin(), makerUser.openOrders.end(), maker) - makerUser.openOrders.begin();
+            makerUser.openOrders[pos].amount -= amount;
+
+            // add partial order to book 
+            makerBook.push_back(makerUser.openOrders[pos]);
+            break; // since maker.amount > amount, taker order is completely filled 
+        }
+    } 
+
+    // taker has now become a maker order
+    // can safely add to book
+    if (taker.amount > 0) {
+        takerUser.openOrders.push_back(taker);
+        takerBook.push_back(taker);
     }
 }
 
+void Exchange::MatchOrders(Order taker) {
+    if (taker.side == "Buy") {
+        auto& takerBook = makerBookBuy[taker.asset];
+        auto& makerBook = makerBookSell[taker.asset];
+        Exchange::ProcessOrders("Buy", taker, takerBook, makerBook);
+    } 
+    else if (taker.side == "Sell") {
+        auto& takerBook = makerBookSell[taker.asset];
+        auto& makerBook = makerBookBuy[taker.asset];
+        Exchange::ProcessOrders("Sell", taker, takerBook, makerBook);
+    }
 
-
-
+    // sort the order book 
+    std::sort(makerBookBuy[taker.asset].begin(), makerBookBuy[taker.asset].end(), std::greater<Order>());
+    std::sort(makerBookSell[taker.asset].begin(), makerBookSell[taker.asset].end());
+}
 
 void Exchange::PrintUsersOrders(std::ostream& out) const {
     out << "Users Orders (in alphabetical order):\n";
@@ -243,39 +177,43 @@ void Exchange::PrintUsersOrders(std::ostream& out) const {
 void Exchange::PrintTradeHistory(std::ostream &os) const {
     os << "Trade History (in chronological order):\n";
     for(const auto &trade : tradeHistory){
-        os << trade.seller_username << " Sold " << trade.amount << " of " << trade.asset 
-           << " to " << trade.buyer_username << " for " << trade.price << " USD\n";
+        os << trade.buyer_username << " Bought " << trade.amount << " of " << trade.asset 
+           << " From " << trade.seller_username << " for " << trade.price << " USD\n";
     }
 }
 
-// PrintBidAskSpread
+
 void Exchange::PrintBidAskSpread(std::ostream &os) const {
     os << "Asset Bid Ask Spread (in alphabetical order):\n";
 
     // Iterate through all assets
-    std::set<std::string> assets;
-    for (const auto& buyOrders : orderBookBuy) {
-        assets.insert(buyOrders.first);
+    std::vector<std::string> assets;
+    for (const auto& pair : makerBookBuy) {
+        assets.push_back(pair.first);
     }
-    for (const auto& sellOrders : orderBookSell) {
-        assets.insert(sellOrders.first);
+    for (const auto& pair : makerBookSell) {
+        assets.push_back(pair.first);
     }
 
-    for (const auto& asset : assets) {
-        // Get the highest bid (Buy order) for this asset
+    // Remove duplicates
+    std::sort(assets.begin(), assets.end());
+    assets.erase(std::unique(assets.begin(), assets.end()), assets.end());
+
+    for (const std::string& asset : assets) {
         std::string highestBuy = "NA";
-        auto buyIt = orderBookBuy.find(asset);  // Find the asset in the buy order book
-        if (buyIt != orderBookBuy.end() && !buyIt->second.empty()) {
+        auto buyIt = makerBookBuy.find(asset);  
+        if (buyIt != makerBookBuy.end() && !buyIt->second.empty()) {
             highestBuy = std::to_string(buyIt->second.front().price);
         }
 
-        // Get the lowest ask (Sell order) for this asset
         std::string lowestSell = "NA";
-        auto sellIt = orderBookSell.find(asset);  // Find the asset in the sell order book
-        if (sellIt != orderBookSell.end() && !sellIt->second.empty()) {
+        auto sellIt = makerBookSell.find(asset); 
+        if (sellIt != makerBookSell.end() && !sellIt->second.empty()) {
             lowestSell = std::to_string(sellIt->second.front().price);
         }
 
         os << asset << ": Highest Open Buy = " << highestBuy << " USD and Lowest Open Sell = " << lowestSell << " USD\n";
     }
 }
+
+
