@@ -93,7 +93,7 @@ void Exchange::MatchOrders(Order order) {
             if (order.price >= sellOrder.price && order.amount > 0) {
                 // Match the orders
                 int matchedAmount = std::min(order.amount, sellOrder.amount);
-                int totalPrice = matchedAmount * sellOrder.price;
+                int totalPrice = matchedAmount * order.price;
 
                 // Update user portfolios
                 auto& buyUser = users[order.username];
@@ -108,7 +108,8 @@ void Exchange::MatchOrders(Order order) {
 
                 // If the sell order is filled, move it to filled orders
                 if (remainingSellAmount == 0) {
-                    sellUser.filledOrders.push_back(sellOrder);
+                    sellUser.filledOrders.push_back(Order(sellOrder.username, sellOrder.side, 
+                        sellOrder.asset, matchedAmount, order.price));
                     // Remove from sell order book and user's open orders
                     sellOrders.erase(std::find(sellOrders.begin(), sellOrders.end(), sellOrder));
                     sellUser.openOrders.erase(std::find(sellUser.openOrders.begin(), sellUser.openOrders.end(), sellOrder));
@@ -157,7 +158,7 @@ void Exchange::MatchOrders(Order order) {
             if (order.price <= buyOrder.price && order.amount > 0) {
                 // Match the orders
                 int matchedAmount = std::min(order.amount, buyOrder.amount);
-                int totalPrice = matchedAmount * buyOrder.price;
+                int totalPrice = matchedAmount * order.price;
 
                 // Update user portfolios
                 auto& buyUser = users[buyOrder.username];
@@ -173,7 +174,8 @@ void Exchange::MatchOrders(Order order) {
 
                 // If the buy order is filled, move it to filled orders
                 if (remainingBuyAmount == 0) {
-                    buyUser.filledOrders.push_back(buyOrder);
+                    buyUser.filledOrders.push_back(Order(buyOrder.username, buyOrder.side, 
+                        buyOrder.asset, matchedAmount, order.price));
                     // Remove from buy order book and user's open orders
                     buyOrders.erase(std::find(buyOrders.begin(), buyOrders.end(), buyOrder));
                     buyUser.openOrders.erase(std::find(buyUser.openOrders.begin(), buyUser.openOrders.end(), buyOrder));
@@ -277,4 +279,3 @@ void Exchange::PrintBidAskSpread(std::ostream &os) const {
         os << asset << ": Highest Open Buy = " << highestBuy << " USD and Lowest Open Sell = " << lowestSell << " USD\n";
     }
 }
-

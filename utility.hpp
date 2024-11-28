@@ -11,6 +11,8 @@ struct Order {
     int amount;
     int price; // Price per asset in USD
 
+    Order() = default;
+
     // Constructor
     Order(const std::string& u, const std::string& s, const std::string& a, int m, int p)
         : username(u), side(s), asset(a), amount(m), price(p) {}
@@ -21,6 +23,8 @@ struct Order {
 
     // Equality operator (operator==)
     bool operator==(const Order& other) const;
+    bool operator<(const Order& other) const;  
+    bool operator>(const Order& other) const;
 
     // Output operator (operator<<)
     friend std::ostream& operator<<(std::ostream& os, const Order& order);
